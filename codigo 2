@@ -1,0 +1,1052 @@
+/ This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=5
+indicator('Support Resistance - Dynamic v2', 'SRv2', overlay=true)
+prd = input.int(defval=10, title='Pivot Period', minval=4, maxval=30, group='Setup')
+ppsrc = input.string(defval='High/Low', title='Source', options=['High/Low', 'Close/Open'], group='Setup')
+maxnumpp = input.int(defval=20, title=' Maximum Number of Pivot', minval=5, maxval=100, group='Setup')
+ChannelW = input.int(defval=10, title='Maximum Channel Width %', minval=1, group='Setup')
+maxnumsr = input.int(defval=5, title=' Maximum Number of S/R', minval=1, maxval=10, group='Setup')
+min_strength = input.int(defval=2, title=' Minimum Strength', minval=1, maxval=10, group='Setup')
+labelloc = input.int(defval=20, title='Label Location', group='Colors', tooltip='Positive numbers reference future bars, negative numbers reference histical bars')
+linestyle = input.string(defval='Dashed', title='Line Style', options=['Solid', 'Dotted', 'Dashed'], group='Colors')
+linewidth = input.int(defval=2, title='Line Width', minval=1, maxval=4, group='Colors')
+resistancecolor = input.color(defval=color.red, title='Resistance Color', group='Colors')
+supportcolor = input.color(defval=color.lime, title='Support Color', group='Colors')
+showpp = input(false, title='Show Point Points')
+
+float src1 = ppsrc == 'High/Low' ? high : math.max(close, open)
+float src2 = ppsrc == 'High/Low' ? low : math.min(close, open)
+float ph = ta.pivothigh(src1, prd, prd)
+float pl = ta.pivotlow(src2, prd, prd)
+
+plotshape(ph and showpp, text='H', style=shape.labeldown, color=na, textcolor=color.new(color.red, 0), location=location.abovebar, offset=-prd)
+plotshape(pl and showpp, text='L', style=shape.labelup, color=na, textcolor=color.new(color.lime, 0), location=location.belowbar, offset=-prd)
+
+Lstyle = linestyle == 'Dashed' ? line.style_dashed : linestyle == 'Solid' ? line.style_solid : line.style_dotted
+
+//calculate maximum S/R channel zone width
+prdhighest = ta.highest(300)
+prdlowest = ta.lowest(300)
+cwidth = (prdhighest - prdlowest) * ChannelW / 100
+
+var pivotvals = array.new_float(0)
+
+if ph or pl
+    array.unshift(pivotvals, ph ? ph : pl)
+    if array.size(pivotvals) > maxnumpp  // limit the array size
+        array.pop(pivotvals)
+
+get_sr_vals(ind) =>
+    float lo = array.get(pivotvals, ind)
+    float hi = lo
+    int numpp = 0
+    for y = 0 to array.size(pivotvals) - 1 by 1
+        float cpp = array.get(pivotvals, y)
+        float wdth = cpp <= lo ? hi - cpp : cpp - lo
+        if wdth <= cwidth  // fits the max channel width?
+            if cpp <= hi
+                lo := math.min(lo, cpp)
+            else
+                hi := math.max(hi, cpp)
+
+            numpp += 1
+            numpp
+    [hi, lo, numpp]
+
+var sr_up_level = array.new_float(0)
+var sr_dn_level = array.new_float(0)
+sr_strength = array.new_float(0)
+
+find_loc(strength) =>
+    ret = array.size(sr_strength)
+    for i = ret > 0 ? array.size(sr_strength) - 1 : na to 0 by 1
+        if strength <= array.get(sr_strength, i)
+            break
+        ret := i
+        ret
+    ret
+
+check_sr(hi, lo, strength) =>
+    ret = true
+    for i = 0 to array.size(sr_up_level) > 0 ? array.size(sr_up_level) - 1 : na by 1
+        //included?
+        if array.get(sr_up_level, i) >= lo and array.get(sr_up_level, i) <= hi or array.get(sr_dn_level, i) >= lo and array.get(sr_dn_level, i) <= hi
+            if strength >= array.get(sr_strength, i)
+                array.remove(sr_strength, i)
+                array.remove(sr_up_level, i)
+                array.remove(sr_dn_level, i)
+                ret
+            else
+                ret := false
+                ret
+            break
+    ret
+
+var sr_lines = array.new_line(11, na)
+var sr_labels = array.new_label(11, na)
+
+for x = 1 to 10 by 1
+    rate = 100 * (label.get_y(array.get(sr_labels, x)) - close) / close
+    label.set_text(array.get(sr_labels, x), text=str.tostring(label.get_y(array.get(sr_labels, x))) + '(' + str.tostring(rate, '#.##') + '%)')
+    label.set_x(array.get(sr_labels, x), x=bar_index + labelloc)
+    label.set_color(array.get(sr_labels, x), color=label.get_y(array.get(sr_labels, x)) >= close ? color.red : color.lime)
+    label.set_textcolor(array.get(sr_labels, x), textcolor=label.get_y(array.get(sr_labels, x)) >= close ? color.white : color.black)
+    label.set_style(array.get(sr_labels, x), style=label.get_y(array.get(sr_labels, x)) >= close ? label.style_label_down : label.style_label_up)
+    line.set_color(array.get(sr_lines, x), color=line.get_y1(array.get(sr_lines, x)) >= close ? resistancecolor : supportcolor)
+
+if ph or pl
+    //because of new calculation, remove old S/R levels
+    array.clear(sr_up_level)
+    array.clear(sr_dn_level)
+    array.clear(sr_strength)
+    //find S/R zones
+    for x = 0 to array.size(pivotvals) - 1 by 1
+        [hi, lo, strength] = get_sr_vals(x)
+        if check_sr(hi, lo, strength)
+            loc = find_loc(strength)
+            // if strength is in first maxnumsr sr then insert it to the arrays 
+            if loc < maxnumsr and strength >= min_strength
+                array.insert(sr_strength, loc, strength)
+                array.insert(sr_up_level, loc, hi)
+                array.insert(sr_dn_level, loc, lo)
+                // keep size of the arrays = 5
+                if array.size(sr_strength) > maxnumsr
+                    array.pop(sr_strength)
+                    array.pop(sr_up_level)
+                    array.pop(sr_dn_level)
+
+    for x = 1 to 10 by 1
+        line.delete(array.get(sr_lines, x))
+        label.delete(array.get(sr_labels, x))
+
+    for x = 0 to array.size(sr_up_level) > 0 ? array.size(sr_up_level) - 1 : na by 1
+        float mid = math.round_to_mintick((array.get(sr_up_level, x) + array.get(sr_dn_level, x)) / 2)
+        rate = 100 * (mid - close) / close
+        array.set(sr_labels, x + 1, label.new(x=bar_index + labelloc, y=mid, text=str.tostring(mid) + '(' + str.tostring(rate, '#.##') + '%)', color=mid >= close ? color.red : color.lime, textcolor=mid >= close ? color.white : color.black, style=mid >= close ? label.style_label_down : label.style_label_up))
+
+        array.set(sr_lines, x + 1, line.new(x1=bar_index, y1=mid, x2=bar_index - 1, y2=mid, extend=extend.both, color=mid >= close ? resistancecolor : supportcolor, style=Lstyle, width=linewidth))
+
+f_crossed_over() =>
+    ret = false
+    for x = 0 to array.size(sr_up_level) > 0 ? array.size(sr_up_level) - 1 : na by 1
+        float mid = math.round_to_mintick((array.get(sr_up_level, x) + array.get(sr_dn_level, x)) / 2)
+        if close[1] <= mid and close > mid
+            ret := true
+            ret
+    ret
+
+f_crossed_under() =>
+    ret = false
+    for x = 0 to array.size(sr_up_level) > 0 ? array.size(sr_up_level) - 1 : na by 1
+        float mid = math.round_to_mintick((array.get(sr_up_level, x) + array.get(sr_dn_level, x)) / 2)
+        if close[1] >= mid and close < mid
+            ret := true
+            ret
+    ret
+
+alertcondition(f_crossed_over(), title='Resistance Broken', message='Resistance Broken')
+alertcondition(f_crossed_under(), title='Support Broken', message='Support Broken')
+
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Copyright 2022 PapaAlan
+//
+// v 1.19 02/02/2024
+//  Mitigation bug fixes
+//  New at bottom of settings, option to show mitigated fvg boxes for user number of candles before they are removed.
+// v 1.20 02/05/2024
+//  Add requested option to allow user ot enable mitigation of fvg's whereby instead of using the current charts timeframe as the source
+//    price for mitigation of all enabled fvg timeframes, instead mitigation will use the associated time frame of each fvg (close) to
+//    determine the mitigation of fvg's.  ie. if chart is on 5min timeframe and 1hr fvg timeframe enabled, an fvg only mitigated if price action from 1hr meets the criteria 
+//    instead of the price action from the 5min chart itself.
+
+//@version=5
+indicator(title='MTF Fair Value Gap Indicator ULTRA w/Alerts', shorttitle = 'MTF FVG ULTRA',overlay=true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+var DebugTable = table.new(position = position.bottom_center, columns = 2, rows = 5, bgcolor = color.white, border_width = 1)
+
+// |                TIPS              | //
+descTip1            =   "FVG's commonly known as Fair Value Gaps are mostly in use for forex trading.  You can google the concept but it's very useful in price action trading, even on regular large cap stocks."
+descTip2            =   "Think of it as an imbalance area where it may actually be under/over valued due to many orders being injected in a short amount of time, ie . an impulse created by the speed of the movement."
+descTip3            =   "In essence, the FVG can become a kind of magnet drawing the price back to that level to attempt to balance out the orders (when? we don't know)."
+descTip4            =   "\n\nPlease do research to understand the concept of FVG's.  \n\nYou can look for an opportunity as price approaches the FVG for entry either long/short because after all, it is an 'Area of Interest'."
+descTip5            =   "\n\nNo indicator works 100% of the time so take in context as just another indicator. It tends work on larger time frames best. "
+alertTip1           =   "You can set an alert for when an FVG is created, (Bullish, Bearish or Both).  Another alert is provided for when the price moves inside the FVG (Bullish, Bearish or Both).  "
+alertTip2           =   "\n\nIMPORTANT NOTE: Due to the TradingView architecture, If you set an alert and then at some point go to the indicator settings and change the FVG timeframe boxes, the alert will still report on the old settings.  "
+alertTip3           =   "Before you set alerts up by right clicking on the chart and selecting etc., make sure you have all the settings you desire checkmarked in the indicator settings.  "
+alertTip4           =   "\n\nIf you do go back and change indicator settings, you should remove the old alert and create a new one!  "
+alertTip5           =   "\n\nWhy?  You ask?  When you create an alert, TV uploads the code for the indicator to their server and runs it there (not on your computer), so if you change the settings locally it doesn't get put up on their server for alerts until you create another alert."
+mkthrsTip           =   "Uncheck to show all FVG's created, (ie. market, postmarket, premarket"
+detection_typeTip        =   "(Candle 1 = latest candle) - Body Method fvg where you can see candle 2 body between candle 1 and candle 3 wicks, both up and down directions.\nWicks Method creates Bullish FVGs if candle 3 top wick is less than candle 1 bottom wick and vice versa for Bearish."
+showlabelTip        =   "Displays Info On FVG Bands"
+fvgcolorsTip        =   "FVG Color Columns\nBullish  (current, 5min, 10min, 15min, 1hr, 4hr, 8hr, daily)\nBearish (current, 5min, 10min, 15min, 1hr, 4hr, 8hr, daily)"
+mitigationS1        =   "NORMAL: causes FVG to disappear when price has moved completely through the zone.\n"
+mitigationS2        =   "DYNAMIC: means the FVG zone will shrink when price moves into it eating up imbalance.\n"
+mitigationS3        =   "NONE: means FVG zones will not be deleted when filled.  Warning:  This option may show many FVG's, reduce the max number of enabled FVG's settings for less clutter.\n"
+mitigationS4        =   "HALF: means FVG zones will be deleted when price incursion into zone reaches half way point."
+mitiactionTip1      =   mitigationS1 + mitigationS2 + mitigationS3 + mitigationS4
+mitiactionTip2      =   "Only for above NONE option.  This is the fill color of all mitigated FVG's that would have occurred."
+mititypeTip         =   "Mitigation Action: 'Normal' is when price moves completely through FVG.  'Dynamic' shrinks FVG as prices moves into it until finally mitigating the " +
+                          "FVG.  'None' never removes any FVG and will probably be too busy on the screen and max out.  Half mitigates when price moves through " +
+                          "FVG exactly that.  'Touch' will mitigate an FVG when the price equals the top or bottom of the FVG depending on the direction of " +
+                          "movement.  Mitigation Type: Body or Wicks, people use either mode.  Mitigation of FVG occurs adding a factor of using body or wick hi/low/open/close " +
+                          "values regarding action type."
+entrychgclrTip      =   "As price enters any FVG, change the band color to user set colors"
+ndtTip              =   "Causes indicator to NOT remove bands for daily FVGs"
+timezoneTip         =   "For labels with creation dates/times, Enter your time zone's offset (+ or −) from UTC, example: New York = -5, for those in the U.S. take into account daylight savings time etc."//, including a decimal fraction if needed."
+incursionTip1       =   "Incursion means the price enters an FVG area (band).  This type of alert MUST have Mitigation Action set to NORMAL, TOUCH OR NONE.\n\n"
+incursionTip2       =   "If using NORMAL or NONE, before setting any alert for this, make sure you select the amount (percentage) of penetration of the price into the FVG band that you desire.  " +
+                          "If using TOUCH percentage input is ignored.\n\n"
+incursionTip3       =   "Incursion alerts are unique so be sure you go to the chart settings and select to set Add an Alert and this indicator name in the Condition Box. Then select Any alert() function call and press the Create button. "
+incursionTip        =   incursionTip1+incursionTip2+incursionTip3
+boxesonrightTip     =   "Enable to show FVG boxes in abbreviated form on right side of chart"
+grp_tfs             =   "ENABLE AND SET DESIRED TIMEFRAMES - SET MAX FVGS TO SHOW FOR EACH TIMEFRAME (NO MORE THAN 500 TOTAL FOR ALL ENABLED TIMEFRAMES) - SELECT BOX FILL COLORS (BULL -- BEAR)"
+group_info          =   ''
+last_num_fvgs_Tip   =   "Enable this to switch from a showing all current fvgs to showing only the last x number of created fvgs.  Applies to bull and bears."
+grp_fvglines        =   "SELECT FVG BORDER COLORS, WIDTH, STYLE - ENABLE FVG MIDLINES AND SET COLORS (BULL/BEAR)"
+confirm_tip         =   "Confirm Mitigation:  Enable to delay any type of mitigation until the end of the current bar.\n" +
+                          "Use Timeframes: Enable causes mitigations only based upon the timeframes you enabled and set. ie. " +
+                          "if 1hr fvg timeframe is enabled and you are on a 15 min chart, mitigation would not possibly occur until the latest " +
+                          "1hr values of close/high/low etc are updated." +
+                          "Otherwise mitigations will be based on the chart's timeframe (open/high/low/close) values intruding on each fvg " +
+                          "for every timeframe you enabled and are using."
+momentum_filter_tip =   "A simple ATR based momentum filters out smaller FVG sizes based on the factor input. ie. the higher the factor value the more momentum " +
+                          "is required to display an FVG.  Momentum Length is in Bars."
+mitigation_tip      =   "Option to show mitigated fvg's until x number of bars until they are deleted."                          
+
+hover1              =   input.bool(true,"Hover over (!) for information about FVG's",group = group_info,tooltip = descTip1+descTip2+descTip3+descTip4+descTip5)
+hover2              =   input.bool(true,"Hover over (!) for alert usage",group = group_info,tooltip = alertTip1+alertTip2+alertTip3+alertTip4+alertTip5)
+hoursOffsetInput    = input.float(-5.0, "GMT Timezone offset (in hours)", minval = -12.0, maxval = 14.0, step = 0.5, group='Display Settings',tooltip = timezoneTip)
+var msOffsetInput   = hoursOffsetInput * 1000 * 60 * 60
+OnlyMktHrs          = input.bool(false,"Enable",group='Display Settings', inline = "mkt",tooltip = mkthrsTip)
+session_range_string= input.session(defval="0930-1600",title="Market Hours Only",group='Display Settings',inline = "mkt")
+en_tf1              = input.bool(defval=true, title="Timeframe 1",group = grp_tfs,inline="00")
+tf1                 = input.timeframe(defval="",title="",group = grp_tfs,inline="00")
+tf1max              = input.int(30,"",group = grp_tfs,inline="00",minval = 0)
+tf1_bucol           = input.color(defval=color.new(color.white,80),title="Fill Colors",group=grp_tfs,inline="00")
+tf1_becol           = input.color(defval=color.new(color.white,80),title="",group=grp_tfs,inline="00")
+en_tf2              = input.bool(defval=false, title="Timeframe 2",group = grp_tfs,inline="01")
+tf2                 = input.timeframe(defval="",title="",group = grp_tfs,inline="01")
+tf2max              = input.int(30,"",group = grp_tfs,inline="01",minval = 0)
+tf2_bucol           = input.color(defval=color.new(color.white,80),title="Fill Colors",group=grp_tfs,inline="01")
+tf2_becol           = input.color(defval=color.new(color.white,80),title="",group=grp_tfs,inline="01")
+en_tf3              = input.bool(defval=false, title="Timeframe 3",group = grp_tfs,inline="02")
+tf3                 = input.timeframe(defval="",title="",group = grp_tfs,inline="02")
+tf3max              = input.int(30,"",group = grp_tfs,inline="02",minval = 0)
+tf3_bucol           = input.color(defval=color.new(color.white,80),title="Fill Colors",group=grp_tfs,inline="02")
+tf3_becol           = input.color(defval=color.new(color.white,80),title="",group=grp_tfs,inline="02")
+en_tf4              = input.bool(defval=false, title="Timeframe 4",group = grp_tfs,inline="03")
+tf4                 = input.timeframe(defval="",title="",group = grp_tfs,inline="03")
+tf4max              = input.int(30,"",group = grp_tfs,inline="03",minval = 0)
+tf4_bucol           = input.color(defval=color.new(color.white,80),title="Fill Colors",group=grp_tfs,inline="03")
+tf4_becol           = input.color(defval=color.new(color.white,80),title="",group=grp_tfs,inline="03")
+en_tf5              = input.bool(defval=false, title="Timeframe 5",group = grp_tfs,inline="04")
+tf5                 = input.timeframe(defval="",title="",group = grp_tfs,inline="04")
+tf5max              = input.int(30,"",group = grp_tfs,inline="04",minval = 0)
+tf5_bucol           = input.color(defval=color.new(color.white,80),title="Fill Colors",group=grp_tfs,inline="04")
+tf5_becol           = input.color(defval=color.new(color.white,80),title="",group=grp_tfs,inline="04")
+en_tf6              = input.bool(defval=false, title="Timeframe 6",group = grp_tfs,inline="05")
+tf6                 = input.timeframe(defval="",title="",group = grp_tfs,inline="05")
+tf6max              = input.int(30,"",group = grp_tfs,inline="05",minval = 0)
+tf6_bucol           = input.color(defval=color.new(color.white,80),title="Fill Colors",group=grp_tfs,inline="05")
+tf6_becol           = input.color(defval=color.new(color.white,80),title="",group=grp_tfs,inline="05")
+show_fvg_type       = input.string(defval = "Both",title='Creation Types', options = ["Both","Bullish","Bearish"],group='FVG Settings',inline='fvgtypes')
+show_labels         = input.bool(true,"Labels",group='FVG Settings',inline='typesnlabels',tooltip = showlabelTip)
+tsizeOption         = input.string(defval="Normal",title="",options= ["Huge","Large","Normal","Small","Tiny","Auto"],group = "FVG Settings",inline='typesnlabels')
+labeltextsize       = (tsizeOption == "Huge") ? size.huge :
+     (tsizeOption == "Large") ? size.large :
+     (tsizeOption == "Small") ? size.small :
+     (tsizeOption == "Tiny") ? size.tiny :
+     (tsizeOption == "Normal") ? size.normal :
+     (tsizeOption == "Auto") ? size.auto :
+         size.normal
+ilabel_shift        = input.int(1,"Offset",group = "FVG Settings",inline='typesnlabels')
+label_shift = (time - time[1]) * ilabel_shift
+labelcolor          = input.color(color.white,"",group = "FVG Settings",inline='typesnlabels')
+show_timeonlabels   = input.bool(false,'Time?',group = 'FVG Settings',inline='typesnlabels')
+enable_last_x_fvgs  = input.bool(defval=false,title='View Only Last x Number of Fvgs: ',group = "FVG Settings",inline="06",tooltip = last_num_fvgs_Tip)
+num_last_x_fvgs     = input.int(defval=3,title="",group = "FVG Settings",inline='06',minval = 0)
+fvgs_on_right       = input.bool(false,title='Show FVGs on Right =>',group = "FVG Settings",inline="07",tooltip = boxesonrightTip)
+on_right_width      = input.int(defval=20,title='Box Width',group = "FVG Settings",inline="07")
+
+box_border_width        = input.int(1,"Width",minval = 0, maxval = 5,group=grp_fvglines,inline='0')
+bbstyle_string          = input.string("Dotted","Style",options = ["Dotted","Dashed","Solid"],group=grp_fvglines,inline='0')
+box_border_style        = bbstyle_string == 'Dotted' ? line.style_dotted : bbstyle_string == 'Dashed' ? line.style_dashed : line.style_solid
+box_border_bull_color   = input.color(color.new(#33ff33,10),"Border",group=grp_fvglines,inline='0')
+box_border_bear_color   = input.color(color.new(#cc0033,10),"Border",group=grp_fvglines,inline='0')
+show_midlines           = input.bool(false,"Midlines",group=grp_fvglines,inline="lines")
+midline_width           = input.int(1,"Thickness",minval = 1, maxval = 5,group=grp_fvglines,inline='lines')
+mbstyle_string          = input.string("Dashed","Style",options = ["Dotted","Dashed","Solid"],group=grp_fvglines,inline='lines')
+line_style              = mbstyle_string == 'Dotted' ? line.style_dotted : mbstyle_string == 'Dashed' ? line.style_dashed : line.style_solid
+bull_midline_color      = input.color(color.new(color.white,0),"",group=grp_fvglines,inline='lines')
+bear_midline_color      = input.color(color.new(color.white,0),"",group=grp_fvglines,inline='lines')
+det_type_s              =   input.string("Body", "Detection Type", options = ["Body","Wick"],group='Detection',inline='DIM0', tooltip = detection_typeTip)
+detection_type           =   det_type_s == "Body" ? true : false
+en_mom              =   input.bool(defval=false,title='Momentum Filter ',group='Detection',inline='0')
+mom_factor          =   input.float(defval=1.0,title="Factor",minval=0,maxval=50,step=.1,group='Detection',inline='0',tooltip = momentum_filter_tip)
+mom_length          =   input.int(100,"Length",group='Detection',inline='0')
+mom_value           =   (ta.atr(mom_length) / 5) * mom_factor
+enable_pips         =   input.bool(defval=false,title='Enable Minimal Pips',group = 'Detection',inline='DIM',tooltip='Only create FVG if greater than pips input value')
+pips_value          =   input.int(defval=4,title='',group = 'Detection',inline='DIM')
+incursion_alerts    =   input.bool(true,'Enable Incursion Alerts',group = 'Incursions',inline='DIM1',tooltip=incursionTip + 'Percentage is amount of price intrusion into FVG before alert')
+incursion_pct       =   input.int(defval=20,title='-  Percentage',group = 'Incursions',inline='DIM1')
+intrusion_percentage=   incursion_pct / 100
+entrychangecolor    =   input.bool(false,"Change FVG Color On Entry          ",group = 'Incursions',inline='DIM4',tooltip = entrychgclrTip)
+entry_bull_color    =   input.color(color.new(color.yellow,90),"Bull",group = 'Incursions',inline='DIM4')
+entry_bear_color    =   input.color(color.new(color.blue,90),"Bear",group = 'Incursions',inline='DIM4')
+miti_use_confirm    =   input.bool(defval=false,title='Confirm Mitigation',group = 'Mitigations',inline='DIM15',tooltip = confirm_tip)
+mitig_use_tfs       =   input.bool(defval=false,title='Use Timeframes',group = 'Mitigations',inline="DIM15")
+show_onscreen_miti_table = input.bool(defval=true,title='Screen Flash',group = 'Mitigations',inline='DIM16')
+miti_table_location =   input.string(defval=position.bottom_left,title='*  Location ->',options=[position.bottom_left,position.bottom_center,position.bottom_right,position.top_left,position.top_center,position.top_right],group = 'Mitigations',inline='DIM16')
+var MitiTable       =   table.new(position = miti_table_location, columns = 1, rows = 2, bgcolor = na, border_width = 1) 
+mitiaction          =   input.string("Normal","Mitigation Action",options = ["Normal","Dynamic","None","Half","Touch"],group = 'Mitigations',inline='DIM2',tooltip = mitiactionTip1)
+intrusion_percentage:=  mitiaction == "Touch" ? 0 : intrusion_percentage
+mitig_type          =   input.string("Wicks","Mitigation Type",options = ["Wicks","Body"],group = 'Mitigations',inline='DIM2',tooltip = mititypeTip)
+UseBodyForMitigation=   mitig_type == "Body" ? true : false
+// mitig_use_tfs       =   input.bool(defval=true,title='Use Timeframes',group = 'Mitigations',inline="DIM3")
+nomiticolor         =   input.color(defval=color.new(color.yellow,85),title="FVG Color For 'None' Option",group = 'Mitigations',inline="DIM3",tooltip = mitiactionTip2)
+nmc_trans           =   color.t(nomiticolor)
+show_mitigations    =   input.bool(defval=true,title='Show mitigations',group = 'Mitigations',inline="4",tooltip = mitigation_tip)
+miti_box_extendright=   input.bool(defval=false,title='Extend boxes right',group = 'Mitigations',inline="4")
+miti_bucol          =   input.color(defval=color.new(#3179f5,25),title="Fill colors",group = 'Mitigations',inline="4")
+miti_becol          =   input.color(defval=color.new(#3179f5,25),title="",group = 'Mitigations',inline="4")
+miti_box_rmv_nbars  =   input.int(defval=3,title='Remove mitigation boxes after x bars',minval=0,group = 'Mitigations',inline="5")
+
+type master_record
+    array<box>      bullfvgs
+    array<box>      bearfvgs
+    color           bucol
+    color           becol    
+    array<label>    bulllabels
+    array<label>    bearlabels
+    array<line>     bullmids
+    array<line>     bearmids
+    float           chigh
+    float           chighb2
+    float           clow
+    float           clowb2
+    float           ccloseb1
+    float           copenb1
+    array<box>      miti_bulls
+    array<box>      miti_bears    
+    float           chighb1   
+    float           clowb1    
+    float           cclose 
+var MR = master_record.new()
+
+[tf1_O,tf1_H,tf1_L,tf1_C] = request.security(syminfo.tickerid,tf1,[open[1],high[1],low[1],close[1]]) 
+[tf2_O,tf2_H,tf2_L,tf2_C] = request.security(syminfo.tickerid,tf2,[open[1],high[1],low[1],close[1]]) 
+[tf3_O,tf3_H,tf3_L,tf3_C] = request.security(syminfo.tickerid,tf3,[open[1],high[1],low[1],close[1]]) 
+[tf4_O,tf4_H,tf4_L,tf4_C] = request.security(syminfo.tickerid,tf4,[open[1],high[1],low[1],close[1]]) 
+[tf5_O,tf5_H,tf5_L,tf5_C] = request.security(syminfo.tickerid,tf5,[open[1],high[1],low[1],close[1]]) 
+[tf6_O,tf6_H,tf6_L,tf6_C] = request.security(syminfo.tickerid,tf6,[open[1],high[1],low[1],close[1]]) 
+
+// added these two globally as can't use them in functions with consistency/reliability towards incursion alerts       
+lasthigh    =   high[1]    
+lastlow     =   low[1]
+
+bool[] en_tfs_array = array.from(en_tf1,en_tf2,en_tf3,en_tf4,en_tf5,en_tf6)
+string[] tf_array = array.from(tf1,tf2,tf3,tf4,tf5,tf6)
+int[] tf_maxarray = array.from(tf1max,tf2max,tf3max,tf4max,tf5max,tf6max)
+
+var tf1_Oa = array.new_float(4,0.0), var tf1_Ha = array.new_float(4,0.0), var tf1_La = array.new_float(4,0.0), var tf1_Ca = array.new_float(4,0.0)
+var tf2_Oa = array.new_float(4,0.0), var tf2_Ha = array.new_float(4,0.0), var tf2_La = array.new_float(4,0.0), var tf2_Ca = array.new_float(4,0.0)
+var tf3_Oa = array.new_float(4,0.0), var tf3_Ha = array.new_float(4,0.0), var tf3_La = array.new_float(4,0.0), var tf3_Ca = array.new_float(4,0.0)
+var tf4_Oa = array.new_float(4,0.0), var tf4_Ha = array.new_float(4,0.0), var tf4_La = array.new_float(4,0.0), var tf4_Ca = array.new_float(4,0.0)
+var tf5_Oa = array.new_float(4,0.0), var tf5_Ha = array.new_float(4,0.0), var tf5_La = array.new_float(4,0.0), var tf5_Ca = array.new_float(4,0.0)
+var tf6_Oa = array.new_float(4,0.0), var tf6_Ha = array.new_float(4,0.0), var tf6_La = array.new_float(4,0.0), var tf6_Ca = array.new_float(4,0.0)
+
+var tf1_bulls = array.new_box(), var tf1_bears = array.new_box(), var tf1_bulabels = array.new_label(), var tf1_belabels = array.new_label()
+var det_tf1bull = false, var det_tf1bear = false, var tf1_bumid = array.new_line(), var tf1_bemid = array.new_line()
+var tf2_bulls = array.new_box(), var tf2_bears = array.new_box(), var tf2_bulabels = array.new_label(), var tf2_belabels = array.new_label()
+var det_tf2bull = false, var det_tf2bear = false, var tf2_bumid = array.new_line(), var tf2_bemid = array.new_line()
+var tf3_bulls = array.new_box(), var tf3_bears = array.new_box(), var tf3_bulabels = array.new_label(), var tf3_belabels = array.new_label()
+var det_tf3bull = false, var det_tf3bear = false, var tf3_bumid = array.new_line(), var tf3_bemid = array.new_line()
+var tf4_bulls = array.new_box(), var tf4_bears = array.new_box(), var tf4_bulabels = array.new_label(), var tf4_belabels = array.new_label()
+var det_tf4bull = false, var det_tf4bear = false, var tf4_bumid = array.new_line(), var tf4_bemid = array.new_line()
+var tf5_bulls = array.new_box(), var tf5_bears = array.new_box(), var tf5_bulabels = array.new_label(), var tf5_belabels = array.new_label()
+var det_tf5bull = false, var det_tf5bear = false, var tf5_bumid = array.new_line(), var tf5_bemid = array.new_line()
+var tf6_bulls = array.new_box(), var tf6_bears = array.new_box(), var tf6_bulabels = array.new_label(), var tf6_belabels = array.new_label()
+var det_tf6bull = false, var det_tf6bear = false, var tf6_bumid = array.new_line(), var tf6_bemid = array.new_line()
+
+var tf1_miti_bulls = array.new_box(), var tf1_miti_bears = array.new_box(), var tf2_miti_bulls = array.new_box(), var tf2_miti_bears = array.new_box(), 
+var tf3_miti_bulls = array.new_box(), var tf3_miti_bears = array.new_box(), var tf4_miti_bulls = array.new_box(), var tf4_miti_bears = array.new_box(), 
+var tf5_miti_bulls = array.new_box(), var tf5_miti_bears = array.new_box(), var tf6_miti_bulls = array.new_box(), var tf6_miti_bears = array.new_box(), 
+
+_pushrequestvalues(_tfaopen,_tfahigh,_tfalow,_tfaclose,_o,_h,_l,_c) =>
+    result = false
+    _tfaopen.push(_o)
+    _tfahigh.push(_h)
+    _tfalow.push(_l)
+    _tfaclose.push(_c)
+    result
+
+_ischange(_o,_h,_l,_c) =>
+    result = _o != _o[1] or _h != _h[1] or _l != _l[1] or _c != _c[1] ? true : false
+    result
+
+tf1_change = _ischange(tf1_O,tf1_H,tf1_L,tf1_C)
+tf2_change = _ischange(tf2_O,tf2_H,tf2_L,tf2_C)
+tf3_change = _ischange(tf3_O,tf3_H,tf3_L,tf3_C)
+tf4_change = _ischange(tf4_O,tf4_H,tf4_L,tf4_C)
+tf5_change = _ischange(tf5_O,tf5_H,tf5_L,tf5_C)
+tf6_change = _ischange(tf6_O,tf6_H,tf6_L,tf6_C)
+
+for i = 0 to en_tfs_array.size() - 1
+    tf_enabled = en_tfs_array.get(i)
+    if tf_enabled
+        switch i   
+            0 => tf1_change ? _pushrequestvalues(tf1_Oa,tf1_Ha,tf1_La,tf1_Ca,tf1_O,tf1_H,tf1_L,tf1_C) : na
+            1 => tf2_change ? _pushrequestvalues(tf2_Oa,tf2_Ha,tf2_La,tf2_Ca,tf2_O,tf2_H,tf2_L,tf2_C) : na
+            2 => tf3_change ? _pushrequestvalues(tf3_Oa,tf3_Ha,tf3_La,tf3_Ca,tf3_O,tf3_H,tf3_L,tf3_C) : na
+            3 => tf4_change ? _pushrequestvalues(tf4_Oa,tf4_Ha,tf4_La,tf4_Ca,tf4_O,tf4_H,tf4_L,tf4_C) : na
+            4 => tf5_change ? _pushrequestvalues(tf5_Oa,tf5_Ha,tf5_La,tf5_Ca,tf5_O,tf5_H,tf5_L,tf5_C) : na
+            5 => tf6_change ? _pushrequestvalues(tf6_Oa,tf6_Ha,tf6_La,tf6_Ca,tf6_O,tf6_H,tf6_L,tf6_C) : na
+
+_is_in_session(sessionstring) =>
+    not na(time(timeframe.period, sessionstring))
+
+_gettf_label_str(_tfstring1) =>
+    temptf = _tfstring1 == "" ? timeframe.period : _tfstring1
+    result = not na(str.pos(temptf,"D")) ? "D" : not na(str.pos(temptf,"W")) ? "W"
+               : not na(str.pos(temptf,"1M")) ? "M" : not na(str.pos(temptf,"3M")) ? "3M" : not na(str.pos(temptf,"6M")) ? "6M"
+               : not na(str.pos(temptf,"12M")) ? "Y"
+               : na(str.pos(temptf,"S")) and na(str.pos(temptf,"W")) and na(str.pos(temptf,"M")) and str.tonumber(temptf) >= 60
+               ? str.tostring(str.tonumber(temptf) / 60) + "H"
+               : na(str.pos(temptf,"S")) and na(str.pos(temptf,"W")) and na(str.pos(temptf,"M")) ? temptf + "m" : str.lower(temptf)
+
+_isfvgbull(_type,_low,_high2,_close1,_open1) => 
+    bool retval = false
+    if _type  // if body fvg detection
+        retval := _low > _high2 and _low < _close1 and _high2 > _open1         
+    else   // else wick detection
+        retval := _low > _high2 
+    if enable_pips and retval and not ((_low - _high2) > (pips_value / 10000))
+        retval := false         
+    if en_mom and retval
+        if not (math.abs(_open1 - _close1) > mom_value)
+            retval := false
+    retval
+
+// ************* SEE IF NEW BEAR FVGs DETECTED     
+_isfvgbear(_type,_low2,_high,_close1,_open1) =>
+    bool retval = false
+    if _type
+        retval := _low2 > _high and _high > _close1 and _low2 < _open1        
+    else
+        retval := _low2 > _high
+    if enable_pips and retval and not ((_low2 - _high) > (pips_value / 10000))
+        retval := false 
+    if en_mom and retval
+        if not (math.abs(_open1 - _close1) > mom_value)
+            retval := false                         
+    retval
+
+// *************** GET A FVG BOX TOP AND BOTTOM VALUES
+_getboxelements(_boxarray,_i) =>
+    _box = _boxarray.get(_i)
+    _left       = _box.get_left()
+    _top        = _box.get_top()
+    _btm        = _box.get_bottom()
+    _right      = _box.get_right()
+    [_box,_left,_top,_btm,_right]
+
+_box_n_label_delete(_boxarray,_mitiboxarray,_i,_labelarray,_labelflag,_linearray,_lineflag,_mitiflag,_direction) =>
+    var a = ""    
+    if _boxarray.size() > 0
+        [bptr,left,top,bottom,right] = _getboxelements(_boxarray,_i)        
+        box.delete(bptr)
+        array.remove(_boxarray, _i)
+        if _labelflag
+            laptr = array.get(_labelarray,_i)
+            a := laptr.get_text() + " Mitigated"
+
+        if _mitiflag and show_mitigations
+            if _mitiboxarray.size() > 0
+                mbox = _mitiboxarray.get(_mitiboxarray.size() - 1)
+                mtop = mbox.get_top()
+                mbtm = mbox.get_bottom()
+                if mtop != top and mbtm != bottom  // prevent duplications of miti boxes
+                    _mitiboxarray.push(box.new(left=left, bottom=bottom, right=left + (time-left) , top=top, bgcolor=_direction ? miti_bucol : miti_becol , text=a,text_size=labeltextsize,text_color=labelcolor,text_halign=text.align_right,text_valign=text.align_center,border_color=_direction ? miti_bucol : miti_becol, border_width = 1, border_style = line.style_dotted,extend=miti_box_extendright ? extend.right : extend.none,xloc=xloc.bar_time))
+            else
+                _mitiboxarray.push(box.new(left=left, bottom=bottom, right=left + (time-left), top=top, bgcolor=_direction ? miti_bucol :miti_becol , text=a,text_size=labeltextsize,text_color=labelcolor,text_halign=text.align_right,text_valign=text.align_center,border_color=_direction ? miti_bucol : miti_becol, border_width = 1, border_style = line.style_dotted,extend=miti_box_extendright ? extend.right : extend.none,xloc=xloc.bar_time))            
+
+        if _labelflag
+            laptr = _labelarray.get(_i), laptr.delete(), _labelarray.remove(_i)
+        if _lineflag
+            lptr = _linearray.get(_i), lptr.delete(), _linearray.remove(_i)
+        
+// *************** ADD A LABEL TO AN FVG    
+_addlabel(_fvglabelsarray,_time,_high,_string,_style,y,_show_label) =>
+    var string s = na
+    if _show_label
+        if show_timeonlabels
+            s := _string + str.format("  {0,date,HH:mm MM/dd/yy}", time + msOffsetInput)
+        else
+            s := _string
+        laptr = label.new(_time,_high,text=s,color=color.rgb(0,0,0,100),style = _style,xloc=xloc.bar_time)
+        laptr.set_textcolor(labelcolor)
+        laptr.set_xy(_time + label_shift,y)
+        laptr.set_size(labeltextsize)
+        _fvglabelsarray.push(laptr)
+
+_addline(_fvglinearray,_x1,_y1,_x2,_y2,_color,_style,_width,_extend) =>
+    _fvglinearray.push(line.new(x1=_x1,y1=_y1,x2=_x2,y2=_y2,xloc=xloc.bar_time, extend= _extend,color=_color,style=_style,width=_width))
+
+// compare existing bull fvg box values to current price action
+_getbullfvgaction(_mr,_top,_bottom,_intrusion_percentage) =>
+    midpt = (_top + _bottom) / 2
+    float tlow = 0.0, float tclose = 0.0, float tlowb1 = 0.0
+    if mitig_use_tfs
+        tlow := _mr.clow, tclose := _mr.cclose, tlowb1 := _mr.clowb1     
+    else 
+        tlow := low, tclose := close, tlowb1 := lastlow
+    threshold = _top - (_intrusion_percentage * (_top - _bottom))
+    _have_intrusion = mitiaction == "Touch" ? tlow <= _top and tlowb1 >= _top : tlow < threshold and tlowb1 > threshold
+    //DebugTable.cell(0, 0, text="_top tlow tclose tlowb1: " + str.tostring(_top) + " " + str.tostring(tlow) + " " + str.tostring(tclose) + " " + str.tostring(tlowb1), bgcolor = color.new(color.green, 0), text_color = color.white,text_halign=text.align_center)
+    _lowundertop    = mitiaction == "Touch" ? tlow <= _top and tlowb1 >= _top : tlow < _top
+    _lowunderbtm    = tlow < _bottom
+    _lowundermid    = tlow < midpt
+    _closeundertop  = mitiaction == "Touch" ? tclose <= _top and tlowb1 >= _top : tclose < _top
+    _closeunderbtm  = tclose < _bottom
+    _closeundermid  = tlow < midpt
+    [_lowundertop,_lowunderbtm,_closeundertop,_closeunderbtm,_lowundermid,_closeundermid,_have_intrusion]
+
+// compare existing bear fvg box values to current price action   
+_getbearfvgaction(_mr,_top,_bottom,_intrusion_percentage) =>
+    midpt = (_top + _bottom) / 2
+    float thigh = 0.0, float tclose = 0.0, float thighb1 = 0.0
+    if mitig_use_tfs
+        thigh := _mr.chigh, tclose := _mr.cclose, thighb1 := _mr.chighb1     
+    else 
+        thigh := high, tclose := close, thighb1 := lasthigh    
+    threshold = _bottom + (_intrusion_percentage * (_top - _bottom))
+    _have_intrusion = mitiaction == "Touch" ? thigh >= _bottom and thighb1 <= _bottom : thigh > threshold and thighb1 < threshold
+    _highovertop    = thigh > _top
+    _highoverbtm    = mitiaction == "Touch" ? thigh >= _bottom and thighb1 <= _bottom : thigh > _bottom
+    _highovermid    = thigh > midpt
+    _closeovertop   = tclose > _top
+    _closeoverbtm   = mitiaction == "Touch" ? tclose >= _bottom and thighb1 <= _bottom : tclose > _bottom
+    _closeovermid   = tclose > midpt
+    [_highovertop,_highoverbtm,_closeovertop,_closeoverbtm,_highovermid,_closeovermid,_have_intrusion]
+
+// used for adjusting fvg label position with each new bar
+_setlabelxy(_fvglabels,_i,_time,_top,_bottom) =>
+    laptr = _fvglabels.get(_i)
+    laptr.set_xy(_time + label_shift,(_top + _bottom) / 2)
+
+_adjust_midline_y(_fvglines,_i,_top,_bottom) =>
+    lptr = _fvglines.get(_i)
+    lptr.set_y1((_top + _bottom) / 2)
+    lptr.set_y2((_top + _bottom) / 2)    
+
+_set_box_left_side(_boxarray,_linearray) => 
+    if _boxarray.size() > 0 
+        for i = _boxarray.size() - 1 to 0 by 1
+            [boxptr,left,top,bottom,right] = _getboxelements(_boxarray,i)
+            boxptr.set_left(time + label_shift)
+            boxptr.set_right(time + label_shift + (time - time[1]) * on_right_width)            
+            if show_midlines
+                lptr = _linearray.get(i)
+                lptr.set_x1(time + label_shift)
+                lptr.set_x2(time + label_shift + (time - time[1]) * on_right_width)             
+
+_box_refresh(_boxarray,_bgcolor,_bordercolor,_labelsarray,_linesarray,_linescolor,num_last_x_fvgs) => 
+    // re-display boxes and any labels first
+    for i = _boxarray.size() - 1 to 0
+        bptr = _boxarray.get(i)
+        bptr.set_bgcolor(_bgcolor)
+        bptr.set_border_color(_bordercolor)
+        if _labelsarray.size() > 0
+            laptr = _labelsarray.get(i)
+            laptr.set_textcolor(color.new(labelcolor,0))
+        if _linesarray.size() > 0
+            lptr = _linesarray.get(i)
+            lptr.set_color(color.new(_linescolor,0))
+
+    // disappear all boxes, lines and possibly labels except user selected latest ones
+    if _boxarray.size() > num_last_x_fvgs
+        for i = _boxarray.size() - 1 - num_last_x_fvgs to 0 by 1
+            tb = _boxarray.get(i)
+            box.set_bgcolor(tb,na)
+            box.set_border_color(tb,na)
+            if _labelsarray.size() > 0            
+                laptr = _labelsarray.get(i)
+                laptr.set_textcolor(color.new(labelcolor,100))
+            if _linesarray.size() > 0
+                lptr = _linesarray.get(i)
+                lptr.set_color(color.new(_linescolor,100))
+
+// modify existing bull fvg boxes for incursion, deletion etc.
+_update_bull_fvgs(_mr,_timestring) =>
+    _boxbullarray = _mr.bullfvgs, _mitibulls = _mr.miti_bulls, _bullfvgcolor = _mr.bucol, _labelsbull = _mr.bulllabels
+    _bullmidlines = _mr.bullmids
+    do_loop = miti_use_confirm ? barstate.isconfirmed : true
+    if do_loop
+        for i = _boxbullarray.size() - 1 to 0 by 1
+            [boxelem,left,top,bottom,right] = _getboxelements(_boxbullarray,i)
+            [lowundertop,lowunderbtm,closeundertop,closeunderbtm,lowundermid,closeundermid,intrusion] = _getbullfvgaction(_mr,top,bottom,intrusion_percentage)
+            // INCURSION ALERT DONE HERE: if mitigation action is normal,none or touch then do alert
+            if (mitiaction == "Normal" or mitiaction == "None" or mitiaction == "Touch") and intrusion and incursion_alerts
+                if show_onscreen_miti_table
+                    MitiTable.cell(0, 0, text="Mitigated Bull Mitigated Bull " + str.tostring(top), bgcolor = color.new(color.green, 0), text_color = color.white,text_halign=text.align_center)
+                alert("Bull FVG Incursion " + str.tostring(_timestring), alert.freq_once_per_bar)
+            else
+                MitiTable.clear(0,0,0,0)                
+            if entrychangecolor
+                if lowundertop  // low < top   
+                    boxelem.set_bgcolor(entry_bull_color)
+
+            if show_labels     
+                _setlabelxy(_labelsbull,i,time,top,bottom)
+            // *** if mitigation is set to dynamic and body is referenced with price and price is within fvg
+            if mitiaction == "Dynamic" and UseBodyForMitigation and closeundertop 
+                boxelem.set_top(close)
+                if show_labels
+                    _setlabelxy(_labelsbull,i,time,close,bottom)    
+                if show_midlines
+                    _adjust_midline_y(_bullmidlines,i,close,bottom)            
+            else
+            // else if mitigation set to dynamic and body mitigation NOT enabled and btm wick goes below top of fvg band then move band top lower            
+                if mitiaction == "Dynamic" and lowundertop 
+                    boxelem.set_top(low)
+                    if show_labels
+                        _setlabelxy(_labelsbull,i,time,low,bottom)
+                    if show_midlines
+                        _adjust_midline_y(_bullmidlines,i,low,bottom)                          
+            // section to delete boxes when fvg filled
+            if mitiaction == "None" // if 'none' selected for mitigation
+                if UseBodyForMitigation
+                    if closeunderbtm
+                        boxelem.set_bgcolor(color.new(nomiticolor,nmc_trans))
+                else
+                    if lowunderbtm 
+                        boxelem.set_bgcolor(color.new(nomiticolor,nmc_trans)) 
+                if (UseBodyForMitigation and closeunderbtm) or (not UseBodyForMitigation and lowunderbtm)
+                    if show_labels
+                        laptr = _labelsbull.get(i)
+                        curr_text = laptr.get_text()
+                        found = str.contains(curr_text,"Mitigated")                    
+                        if not found
+                            laptr.set_text(curr_text + " Mitigated")                     
+            if mitiaction == "Normal" or mitiaction == "Dynamic"
+                if UseBodyForMitigation
+                    if closeunderbtm
+                        _box_n_label_delete(_boxbullarray, _mitibulls,i,_labelsbull, show_labels,_bullmidlines,show_midlines,true,true)            
+                else
+                    if lowunderbtm 
+                        _box_n_label_delete(_boxbullarray, _mitibulls,i,_labelsbull, show_labels,_bullmidlines,show_midlines,true,true)            
+            if mitiaction == "Half" // if half mitigation
+                if UseBodyForMitigation and closeundermid
+                    _box_n_label_delete(_boxbullarray, _mitibulls,i,_labelsbull, show_labels,_bullmidlines,show_midlines,true,true)                        
+                else
+                    if lowundermid 
+                        _box_n_label_delete(_boxbullarray, _mitibulls,i,_labelsbull, show_labels,_bullmidlines,show_midlines,true,true)             
+            if mitiaction == "Touch" // if half mitigation
+                if UseBodyForMitigation and closeundertop
+                    _box_n_label_delete(_boxbullarray, _mitibulls,i,_labelsbull, show_labels,_bullmidlines,show_midlines,true,true)                       
+                else
+                    if lowundertop
+                        _box_n_label_delete(_boxbullarray, _mitibulls,i,_labelsbull, show_labels,_bullmidlines,show_midlines,true,true)            
+        if fvgs_on_right
+            _set_box_left_side(_boxbullarray,_bullmidlines)
+        if enable_last_x_fvgs and array.size(_boxbullarray) > 0
+            _box_refresh(_boxbullarray,_bullfvgcolor,box_border_bull_color,_labelsbull,_bullmidlines,bull_midline_color,num_last_x_fvgs)
+
+// modify existing bear fvg boxes for incursion, deletion etc.
+_update_bear_fvgs(_mr,_timestring) => //_boxbeararray,_mitibears,_bearfvgcolor,_labelsbear,_bearmidlines,_timestring) =>   
+    _boxbeararray = _mr.bearfvgs, _mitibears = _mr.miti_bears, _bearfvgcolor = _mr.becol, _labelsbear = _mr.bearlabels
+    _bearmidlines = _mr.bearmids
+    do_loop = miti_use_confirm ? barstate.isconfirmed : true
+    if do_loop                 
+        for i = _boxbeararray.size() - 1 to 0 by 1
+            [boxelem,left,top,bottom,right] = _getboxelements(_boxbeararray,i)
+            [highovertop,highoverbtm,closeovertop,closeoverbtm,highovermid,closeovermid,intrusion] = _getbearfvgaction(_mr,top,bottom,intrusion_percentage)         
+            // INCURSION ALERT DONE HERE: if mitigation action is normal or none then do alert
+            if (mitiaction == "Normal" or mitiaction == "None" or mitiaction == "Touch") and intrusion and incursion_alerts
+                if show_onscreen_miti_table                
+                    MitiTable.cell(0, 0, text="Mitigated Bear Mitigated Bear " + str.tostring(bottom), bgcolor = color.new(color.red, 0), text_color = color.white,text_halign=text.align_center)
+                alert("Bear FVG Incursion " + str.tostring(_timestring), alert.freq_once_per_bar)
+            else
+                MitiTable.clear(0,0,0,0)
+            if entrychangecolor
+                if highoverbtm   
+                    boxelem.set_bgcolor(entry_bear_color)
+            if show_labels 
+                _setlabelxy(_labelsbear,i,time,top,bottom)            
+            // *** if mitigation is set to dynamic and body is referenced with price and price is within fvg
+            if mitiaction == "Dynamic" and UseBodyForMitigation and closeoverbtm  
+                boxelem.set_bottom(close) 
+                if show_labels
+                    _setlabelxy(_labelsbear,i,time,close,bottom) 
+                if show_midlines
+                    _adjust_midline_y(_bearmidlines,i,close,bottom)                                       
+            else
+            // else if mitigation set to dynamic and body mitigation NOT enabled and top wick goes above bottom of fvg band then move band bottom up            
+                if mitiaction == "Dynamic" and highoverbtm 
+                    boxelem.set_bottom(high)
+                    if show_labels
+                        _setlabelxy(_labelsbear,i,time,top,high)  
+                    if show_midlines
+                        _adjust_midline_y(_bearmidlines,i,top,high)
+            if mitiaction == "None" // if 'none' selected for mitigation
+                if UseBodyForMitigation
+                    if closeovertop
+                        boxelem.set_bgcolor(color.new(nomiticolor,nmc_trans))
+                else
+                    if highovertop
+                        boxelem.set_bgcolor(color.new(nomiticolor,nmc_trans))  
+                if (UseBodyForMitigation and closeovertop) or (not UseBodyForMitigation and highovertop)
+                    if show_labels
+                        laptr = _labelsbear.get(i)
+                        curr_text = laptr.get_text()
+                        found = str.contains(curr_text,"Mitigated")                    
+                        if not found
+                            laptr.set_text(curr_text + " Mitigated")                    
+            if mitiaction == "Normal" or mitiaction == "Dynamic"
+                if UseBodyForMitigation
+                    if closeovertop 
+                        _box_n_label_delete(_boxbeararray, _mitibears,i,_labelsbear, show_labels,_bearmidlines,show_midlines,true,false)       
+                else
+                    if highovertop 
+                        _box_n_label_delete(_boxbeararray, _mitibears,i,_labelsbear, show_labels,_bearmidlines,show_midlines,true,false)   
+            if mitiaction == "Half" // if half mitigation
+                if UseBodyForMitigation
+                    if closeovermid
+                        _box_n_label_delete(_boxbeararray, _mitibears,i,_labelsbear, show_labels,_bearmidlines,show_midlines,true,false)             
+                else
+                    if highovermid 
+                        _box_n_label_delete(_boxbeararray, _mitibears,i,_labelsbear, show_labels,_bearmidlines,show_midlines,true,false)  
+            if mitiaction == "Touch" // if half mitigation
+                if UseBodyForMitigation
+                    if closeoverbtm
+                        _box_n_label_delete(_boxbeararray, _mitibears,i,_labelsbear, show_labels,_bearmidlines,show_midlines,true,false)             
+                else
+                    if highoverbtm 
+                        _box_n_label_delete(_boxbeararray, _mitibears,i,_labelsbear, show_labels,_bearmidlines,show_midlines,true,false)  
+        if fvgs_on_right
+            _set_box_left_side(_boxbeararray,_bearmidlines)
+        if enable_last_x_fvgs and array.size(_boxbeararray) > 0
+            _box_refresh(_boxbeararray,_bearfvgcolor,box_border_bear_color,_labelsbear,_bearmidlines,bear_midline_color,num_last_x_fvgs)
+
+// check for duplicate boxes required for eliminating duplicate higher timeframe fvg boxes
+_duplicate_box(_boxarray,_top,_bottom) =>
+    found = false
+    if _boxarray.size() > 0 //array.size(_boxarray) > 0
+        for i = _boxarray.size() - 1 to 0 by 1       
+            [_barray,left,top,bottom,right] = _getboxelements(_boxarray,i) 
+            if _top == top or _bottom == bottom
+                found := true
+                break
+    found
+
+_update_mitigation_boxes(_struct) =>
+    result = false
+    if _struct.size() > 0
+        for i = _struct.size() - 1 to 0
+            mbox = _struct.get(i)
+            boxright = mbox.get_right()  
+            if time > boxright + ((time - time[1]) * (miti_box_rmv_nbars - 1))    
+                mbox.delete()
+                _struct.remove(i)
+    result
+
+inSession = _is_in_session(session_range_string)
+
+_handle_all(_labelstring, _struct,_maxarraysize) =>
+    var bool _newBull = false
+    var bool _newBear = false
+    if OnlyMktHrs and inSession or not OnlyMktHrs
+        _newBull := show_fvg_type == "Both" or show_fvg_type == "Bullish" ? _isfvgbull(detection_type,_struct.clow,_struct.chighb2,_struct.ccloseb1,_struct.copenb1) : false
+        _newBear := show_fvg_type == "Both" or show_fvg_type == "Bearish" ? _isfvgbear(detection_type,_struct.clowb2,_struct.chigh,_struct.ccloseb1,_struct.copenb1) : false
+    if _newBull
+        if _struct.bullfvgs.size() > _maxarraysize + 1
+            _box_n_label_delete(_struct.bullfvgs, _struct.miti_bulls,0,_struct.bulllabels, show_labels,_struct.bullmids,show_midlines,false,true) 
+        if not _duplicate_box(_struct.bullfvgs,_struct.clow,_struct.chighb2) 
+            right = fvgs_on_right ? time + ((time - time[1]) * on_right_width) : time + ((time - time[1]) * 10)//bar_index+on_right_width : bar_index + 2
+            extend = fvgs_on_right ? extend.none : extend.right
+            _struct.bullfvgs.push(box.new(left=time[2], bottom=_struct.chighb2, right=right, top=_struct.clow, bgcolor=_struct.bucol , border_color=box_border_bull_color, border_width = box_border_width, border_style = box_border_style,extend=extend,xloc=xloc.bar_time))
+            if show_labels
+                _addlabel(_struct.bulllabels,time[2],_struct.chigh,_labelstring + " Bull",label.style_label_left,(_struct.chighb2 + _struct.clow) / 2, show_labels)
+            if show_midlines
+                mid = (_struct.clow + _struct.chighb2) / 2
+                _addline(_struct.bullmids,time[2],mid,right,mid,bull_midline_color,line_style,midline_width,extend)
+    if _newBear
+        if _struct.bearfvgs.size() > _maxarraysize + 1       
+            _box_n_label_delete(_struct.bearfvgs, _struct.miti_bears,0,_struct.bearlabels, show_labels,_struct.bearmids,show_midlines,false,false)     
+        if not _duplicate_box(_struct.bearfvgs,_struct.clowb2,_struct.chigh)  // inputs top, bottom of box
+            right = fvgs_on_right ? time + ((time - time[1]) * on_right_width) : time + ((time - time[1]) * 10)//right = fvgs_on_right ? bar_index+on_right_width : bar_index + 2 //[2]
+            extend = fvgs_on_right ? extend.none : extend.right
+            _struct.bearfvgs.push(box.new(left=time[2], top=_struct.clowb2, right=right, bottom=_struct.chigh, bgcolor=_struct.becol, border_color=box_border_bear_color, border_width = box_border_width, border_style = box_border_style,extend=extend,xloc=xloc.bar_time))
+            if show_labels
+                _addlabel(_struct.bearlabels,time[2],_struct.clowb2,_labelstring + " Bear",label.style_label_left,(_struct.clowb2 + _struct.chigh) / 2, show_labels)
+            if show_midlines
+                mid = (_struct.clowb2 + _struct.chigh) / 2
+                _addline(_struct.bearmids,time[2],mid,right,mid,bear_midline_color,line_style,midline_width,extend)                
+
+    if _struct.bullfvgs.size() > 0  // this code is to handle incursion alerts before FVG's possibly being mitigated
+        _update_bull_fvgs(_struct,_labelstring) 
+    if _struct.miti_bulls.size() > 0
+        _update_mitigation_boxes(_struct.miti_bulls)
+    if _struct.bearfvgs.size() > 0  // this code is to handle incursion alerts before FVG's possibly being mitigated
+        _update_bear_fvgs(_struct,_labelstring)   
+    if _struct.miti_bears.size() > 0         
+        _update_mitigation_boxes(_struct.miti_bears)
+    [_newBull,_newBear]                 
+
+_set_enabled_tf_info(_index) =>
+    result = switch _index   
+        0 => MR.bullfvgs := tf1_bulls, MR.bearfvgs := tf1_bears, MR.bucol := tf1_bucol, MR.becol := tf1_becol, MR.bulllabels := tf1_bulabels, MR.bearlabels := tf1_belabels, MR.bullmids := tf1_bumid, 
+                 MR.bearmids := tf1_bemid, MR.chigh := tf1_Ha.last(), MR.chighb2 := tf1_Ha.get(tf1_Ha.size() - 3), MR.clow := tf1_La.last(), MR.clowb2 := tf1_La.get(tf1_La.size() - 3), MR.ccloseb1 := tf1_Ca.get(tf1_Ca.size() - 2), MR.copenb1 := tf1_Oa.get(tf1_Oa.size() - 2),
+                 MR.miti_bulls := tf1_miti_bulls, MR.miti_bears := tf1_miti_bears, MR.chighb1 := tf1_Ha.get(tf1_Ha.size() - 2), MR.clowb1 := tf1_La.get(tf1_La.size() - 2), MR.cclose := tf1_Ca.last()
+        1 => MR.bullfvgs := tf2_bulls, MR.bearfvgs := tf2_bears, MR.bucol := tf2_bucol, MR.becol := tf2_becol, MR.bulllabels := tf2_bulabels, MR.bearlabels := tf2_belabels, MR.bullmids := tf2_bumid, 
+                 MR.bearmids := tf2_bemid, MR.chigh := tf2_Ha.last(), MR.chighb2 := tf2_Ha.get(tf2_Ha.size() - 3), MR.clow := tf2_La.last(), MR.clowb2 := tf2_La.get(tf2_La.size() - 3), MR.ccloseb1 := tf2_Ca.get(tf2_Ca.size() - 2), MR.copenb1 := tf2_Oa.get(tf2_Oa.size() - 2),
+                 MR.miti_bulls := tf2_miti_bulls, MR.miti_bears := tf2_miti_bears, MR.chighb1 := tf2_Ha.get(tf2_Ha.size() - 2), MR.clowb1 := tf2_La.get(tf2_La.size() - 2), MR.cclose := tf2_Ca.last()               
+        2 => MR.bullfvgs := tf3_bulls, MR.bearfvgs := tf3_bears, MR.bucol := tf3_bucol, MR.becol := tf3_becol, MR.bulllabels := tf3_bulabels, MR.bearlabels := tf3_belabels, MR.bullmids := tf3_bumid, 
+                 MR.bearmids := tf3_bemid, MR.chigh := tf3_Ha.last(), MR.chighb2 := tf3_Ha.get(tf3_Ha.size() - 3), MR.clow := tf3_La.last(), MR.clowb2 := tf3_La.get(tf3_La.size() - 3), MR.ccloseb1 := tf3_Ca.get(tf3_Ca.size() - 2), MR.copenb1 := tf3_Oa.get(tf3_Oa.size() - 2),        
+                 MR.miti_bulls := tf3_miti_bulls, MR.miti_bears := tf3_miti_bears, MR.chighb1 := tf3_Ha.get(tf3_Ha.size() - 2), MR.clowb1 := tf3_La.get(tf3_La.size() - 2), MR.cclose := tf3_Ca.last()                
+        3 => MR.bullfvgs := tf4_bulls, MR.bearfvgs := tf4_bears, MR.bucol := tf4_bucol, MR.becol := tf4_becol, MR.bulllabels := tf4_bulabels, MR.bearlabels := tf4_belabels, MR.bullmids := tf4_bumid, 
+                 MR.bearmids := tf4_bemid, MR.chigh := tf4_Ha.last(), MR.chighb2 := tf4_Ha.get(tf4_Ha.size() - 3), MR.clow := tf4_La.last(), MR.clowb2 := tf4_La.get(tf4_La.size() - 3), MR.ccloseb1 := tf4_Ca.get(tf4_Ca.size() - 2), MR.copenb1 := tf4_Oa.get(tf4_Oa.size() - 2),        
+                 MR.miti_bulls := tf4_miti_bulls, MR.miti_bears := tf4_miti_bears, MR.chighb1 := tf4_Ha.get(tf4_Ha.size() - 2), MR.clowb1 := tf4_La.get(tf4_La.size() - 2), MR.cclose := tf4_Ca.last()               
+        4 => MR.bullfvgs := tf5_bulls, MR.bearfvgs := tf5_bears, MR.bucol := tf5_bucol, MR.becol := tf5_becol, MR.bulllabels := tf5_bulabels, MR.bearlabels := tf5_belabels, MR.bullmids := tf5_bumid, 
+                 MR.bearmids := tf5_bemid, MR.chigh := tf5_Ha.last(), MR.chighb2 := tf5_Ha.get(tf5_Ha.size() - 3), MR.clow := tf5_La.last(), MR.clowb2 := tf5_La.get(tf5_La.size() - 3), MR.ccloseb1 := tf5_Ca.get(tf5_Ca.size() - 2), MR.copenb1 := tf5_Oa.get(tf5_Oa.size() - 2),        
+                 MR.miti_bulls := tf5_miti_bulls, MR.miti_bears := tf5_miti_bears, MR.chighb1 := tf5_Ha.get(tf5_Ha.size() - 2), MR.clowb1 := tf5_La.get(tf5_La.size() - 2), MR.cclose := tf5_Ca.last()                
+        5 => MR.bullfvgs := tf6_bulls, MR.bearfvgs := tf6_bears, MR.bucol := tf6_bucol, MR.becol := tf6_becol, MR.bulllabels := tf6_bulabels, MR.bearlabels := tf6_belabels, MR.bullmids := tf6_bumid, 
+                 MR.bearmids := tf6_bemid, MR.chigh := tf6_Ha.last(), MR.chighb2 := tf6_Ha.get(tf6_Ha.size() - 3), MR.clow := tf6_La.last(), MR.clowb2 := tf6_La.get(tf6_La.size() - 3), MR.ccloseb1 := tf6_Ca.get(tf6_Ca.size() - 2), MR.copenb1 := tf6_Oa.get(tf6_Oa.size() - 2),        
+                 MR.miti_bulls := tf6_miti_bulls, MR.miti_bears := tf6_miti_bears, MR.chighb1 := tf6_Ha.get(tf6_Ha.size() - 2), MR.clowb1 := tf6_La.get(tf6_La.size() - 2), MR.cclose := tf6_Ca.last()
+
+// ------- MAIN LOOP -------//
+bool newbull = false, bool newbear = false
+for i = 0 to en_tfs_array.size() - 1
+    tf_enabled = en_tfs_array.get(i)
+    if tf_enabled
+        _set_enabled_tf_info(i)
+        int tf_max_fvgs = tf_maxarray.get(i)
+        t_tf = str.tostring(tf_array.get(i))
+        
+        [tnewboxBull,tnewboxBear] = _handle_all(_gettf_label_str(t_tf),MR,tf_max_fvgs)
+        newbull := tnewboxBull ? true : newbull
+        newbear := tnewboxBear ? true : newbear
+
+alertcondition(newbull,title='Bull FVG Creation',message = 'Bull FVG Creation' )
+alertcondition(newbear,title='Bear FVG Creation',message = 'Bear FVG Creation' )
+alertcondition(newbull or newbear,title='Bull or Bear FVG Creation',message = 'Bull or Bear FVG Creation' )
+
+//@version=5
+// capam
+
+indicator("Nadaraya-Watson Combine",overlay=true,max_bars_back=1000,max_lines_count=500,max_labels_count=500)
+length = input.float(100,'Window Size',maxval=500,minval=0)
+h      = input.float(8.,'Bandwidth')
+mult   = input.float(3.,'Envelope Width') 
+src    = input.source(close,'Source')
+powh = input.int(2,'kernel power')
+den = input.float(2.,'kernel denominator')
+
+mid_col = input.color(#363A45,'Colors',inline='col')
+up_col = input.color(#39ff14,'Colors',inline='col')
+dn_col = input.color(#ff1100,'',inline='col')
+disclaimer = input(false, 'Hide Disclaimer')
+//----
+n = bar_index
+var k = 2
+var middle = array.new_line(0) 
+var upper = array.new_line(0) 
+var lower = array.new_line(0) 
+
+lset(l,x1,y1,x2,y2,col)=>
+    line.set_xy1(l,x1,y1)
+    line.set_xy2(l,x2,y2)
+    line.set_color(l,col)
+    line.set_width(l,2)
+lsetmid(l,x1,y1,x2,y2,col)=>
+    line.set_xy1(l,x1,y1)
+    line.set_xy2(l,x2,y2)
+    line.set_color(l, y2 > y1 ? #ff1100 : #39ff14)
+    line.set_width(l,2)
+
+if barstate.isfirst
+    for i = 0 to length/k-1
+        array.push(middle,line.new(na,na,na,na))
+        array.push(upper,line.new(na,na,na,na))
+        array.push(lower,line.new(na,na,na,na))
+//----
+line mid = na
+line up = na
+line dn = na
+yy1 = 0.
+yy2 = 0.
+ymae = 0.
+//----
+cross_up = 0.
+cross_dn = 0.
+if barstate.islast
+    y = array.new_float(0)
+    
+    sum_e = 0.
+    for i = 0 to length-1
+        sum = 0.
+        sumw = 0.
+        
+        for j = 0 to length-1
+            w = math.exp(-(math.pow(i-j,powh)/(h*h*den)))
+            sum += src[j]*w
+            sumw += w
+        
+        y2 = sum/sumw
+        sum_e += math.abs(src[i] - y2)
+        array.push(y,y2)
+
+    mae = sum_e/length*mult
+    ymae := mae
+    
+    for i = 1 to length-1
+        y2 = array.get(y,i)
+        y1 = array.get(y,i-1)
+        
+        mid := array.get(middle,i/k)
+        up := array.get(upper,i/k)
+        dn := array.get(lower,i/k)
+        
+        lsetmid(mid,n-i+1,y1 ,n-i,y2 ,mid_col)
+        lset(up,n-i+1,y1 + mae,n-i,y2 + mae,up_col)
+        lset(dn,n-i+1,y1 - mae,n-i,y2 - mae,dn_col)
+        
+        if src[i] > y1 + mae and src[i+1] < y1 + mae
+            label.new(n-i,src[i],'▼',color=#00000000,style=label.style_label_down,textcolor=dn_col,textalign=text.align_center)
+        if src[i] < y1 - mae and src[i+1] > y1 - mae
+            label.new(n-i,src[i],'▲',color=#00000000,style=label.style_label_up,textcolor=up_col,textalign=text.align_center)
+    
+    cross_up := array.get(y,0) + mae
+    cross_dn := array.get(y,0) - mae
+    yy1 := array.get(y,1)
+    yy2 := array.get(y,0)
+
+ecol = yy2 > yy1 ? color.green : color.red
+plot(nz(yy2),color=ecol)
+plot(nz(yy2+ymae),color=color.green)
+plot(nz(yy2-ymae),color=color.red)
+
+alertcondition(ta.crossover(src,cross_up),'Down','Down')
+alertcondition(ta.crossunder(src,cross_dn),'Up','Up')
+
+//----
+var tb = table.new(position.top_right, 1, 1
+  , bgcolor = #35202b)
+
+if barstate.isfirst and not disclaimer
+    table.cell(tb, 0, 0, 'Nadaraya-Watson Envelope [LUX] Repaints'
+      , text_size = size.small
+      , text_color = #cc2f3c)
+/ This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+//@version=5
+
+indicator("Liquidity Voids (FVG) [LuxAlgo]", "LuxAlgo - Liquidity Voids (FVG)", overlay = true, max_boxes_count = 500)
+
+//------------------------------------------------------------------------------
+// Settings
+//-----------------------------------------------------------------------------{
+
+mdTT = 'The mode option controls the number of visual objects presented, where\n\n- Historical, takes into account all data available to the user\n- Present, takes into account only the last X bars specified in the \'# Bars\' option'
+mode = input.string('Historical', title = 'Mode', options =['Present', 'Historical'], inline = 'MOD')
+back = input.int   (360, ' # Bars', minval = 100, maxval = 5000, step = 10, inline = 'MOD', tooltip = mdTT)
+
+lqGR = 'Liquidity Detection'
+lqTT = 'Act as a filter while detecting the Liquidity Voids. When set to 0 means no filtering is applied, increasing the value causes the script to check the width of the void compared to a fixed-length ATR value'
+lqTH = input.float(.5, 'Liquidity Voids Threshold', minval = 0, step = .1, group = lqGR, tooltip = lqTT)
+lqBC = input.color(color.new(#089981, 73), 'Bullish', inline = 'VD', group = lqGR)
+lqSC = input.color(color.new(#f23645, 73), 'Bearish', inline = 'VD', group = lqGR)
+lqTX = input.bool (false, 'Label', inline = 'VD', group = lqGR)
+
+lqFT = 'Toggles the visibility of the Filled Liquidity Voids'
+lqVF = input.bool (true, 'Filled Liquidity Voids', inline = 'FL', group = lqGR, tooltip = lqFT)
+lqFC = input.color(color.new(#787b86, 73), '', inline = 'FL', group = lqGR)
+
+//-----------------------------------------------------------------------------}
+// User Defined Types
+//-----------------------------------------------------------------------------{
+
+// @type        bar properties with their values 
+//
+// @field h     (float) high price of the bar
+// @field l     (float) low price of the bar
+// @field c     (float) close price of the bar
+// @field i     (int) index of the bar
+
+type bar
+    float h = high
+    float l = low
+    float c = close
+    int   i = bar_index
+
+//-----------------------------------------------------------------------------}
+// Variables
+//-----------------------------------------------------------------------------{
+
+bar b = bar.new()
+var lqV = array.new_box()
+
+//-----------------------------------------------------------------------------}
+// Calculations
+//-----------------------------------------------------------------------------{
+
+per = mode == 'Present' ? last_bar_index - b.i <= back : true
+atr = ta.atr(144) * lqTH
+
+if per
+    bull = (b.l - b.h[2]) > atr and b.l > b.h[2] and b.c[1] > b.h[2]
+
+    if bull 
+        l = 13
+        if bull[1] 
+            st = math.abs(b.l - b.l[1]) / l
+            for i = 0 to l - 1
+                array.push(lqV, box.new(b.i - 2, b.l[1] + (i + 1) * st, b.i, b.l[1] + i * st, na, bgcolor = lqBC ))
+        else   
+            st = math.abs(b.l - b.h[2]) / l
+            for i = 0 to l - 1
+                if lqTX and i == 0
+                    array.push(lqV, box.new(b.i - 2, b.h[2] + (i + 1) * st, b.i, b.h[2] + i * st, na, text = 'Liquidity Void   ', text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_bottom, text_color = na, bgcolor = lqBC ))
+                else
+                    array.push(lqV, box.new(b.i - 2, b.h[2] + (i + 1) * st, b.i, b.h[2] + i * st, na, bgcolor = lqBC ))
+
+    bear = (b.l[2] - b.h) > atr and b.h < b.l[2] and b.c[1] < b.l[2]
+
+    if bear
+        l = 13
+        if bear[1]
+            st = math.abs(b.h[1] - b.h) / l
+            for i = 0 to l - 1
+                array.push(lqV, box.new(b.i - 2, b.h + (i + 1) * st, b.i, b.h + i * st, na, bgcolor = lqSC ))
+        else
+            st = math.abs(b.l[2] - b.h) / l
+            for i = 0 to l - 1
+                if lqTX and i == l - 1
+                    array.push(lqV, box.new(b.i - 2, b.h + (i + 1) * st, b.i, b.h + i * st, na, text = 'Liquidity Void   ', text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_top, text_color = na, bgcolor = lqSC ))
+                else
+                    array.push(lqV, box.new(b.i - 2, b.h + (i + 1) * st, b.i, b.h + i * st, na, bgcolor = lqSC ))
+
+if lqV.size() > 0
+    qt = lqV.size()
+
+    for bn = qt - 1 to 0
+        if bn < lqV.size()
+            cb = lqV.get(bn)
+            tBX = cb.get_top()
+            bBX = cb.get_bottom()
+            if b.h > bBX and b.l < tBX
+                if lqVF
+                    cb.set_bgcolor(lqFC)
+                else
+                    cb.delete()
+                lqV.remove(bn)
+            else
+                cb.set_right(b.i + 1)
+
+                if b.i - cb.get_left() > 21
+                    cb.set_text_color(chart.fg_color)
+
+    if lqV.size() > 500
+        lqV.shift()
+//-----------------------------------------------------------------------------}
